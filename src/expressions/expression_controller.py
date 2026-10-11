@@ -266,11 +266,15 @@ class ExpressionController:
         left_closure=0.0,
         right_closure=0.0,
     ):
+        is_calibrated = bool(
+            self.left_baseline is not None and self.right_baseline is not None
+        )
         return {
             "left_ear_smooth": self.left_smooth if self.left_smooth is not None else 0.0,
             "right_ear_smooth": self.right_smooth if self.right_smooth is not None else 0.0,
             "left_baseline": self.left_baseline if self.left_baseline is not None else 0.0,
             "right_baseline": self.right_baseline if self.right_baseline is not None else 0.0,
+            "calibrated": is_calibrated,
             "left_ratio": left_ratio,
             "right_ratio": right_ratio,
             "left_closure": left_closure,
