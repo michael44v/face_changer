@@ -6,7 +6,7 @@ from src.transformation.target_face import TargetFace
 from src.transformation.face_warper import warp_face
 from src.blending.blender import blend_face
 from src.tracking.landmark_tracker import LandmarkTracker
-from src.expressions.eye_expression import get_eye_expression
+from src.expressions.eye_expression import get_facial_expressions
 from src.expressions.expression_controller import ExpressionController
 from src.expressions.expression_deformer import deform_landmarks_for_expression
 
@@ -115,9 +115,9 @@ def main():
         display_frame = frame.copy()
 
         if landmarks is not None:
-            # Measure facial expression parameters
-            eye_data = get_eye_expression(landmarks)
-            expression = expression_controller.update(eye_data)
+            # Measure facial expression parameters (eyes, mouth, eyebrows)
+            facial_data = get_facial_expressions(landmarks)
+            expression = expression_controller.update(facial_data)
 
             # Deform source target image landmarks (sampling skin above eye on blinks)
             deformed_target_landmarks = deform_landmarks_for_expression(
@@ -157,9 +157,10 @@ def main():
                 # Diagnostic telemetry text
                 lines = [
                     f"FPS: {fps:.1f}",
-                    f"EAR Raw L:{eye_data['left_ear']:.3f} R:{eye_data['right_ear']:.3f}",
+                    f"EAR Raw L:{facial_data['left_ear']:.3f} R:{facial_data['right_ear']:.3f}",
                     f"Closure L:{expression['left_closure']:.2f} R:{expression['right_closure']:.2f}",
                     f"Base L:{expression['left_baseline']:.3f} R:{expression['right_baseline']:.3f}",
+                    f"Mouth Open:{expression['mouth_open']:.2f} Eyebrow:{expression['eyebrow_elevation']:.2f}",
                     f"Calibrated: {expression['calibrated']}",
                     f"Closed L:{expression['left_closed']} R:{expression['right_closed']}",
                     f"Blinks: {expression['blink_count']}",
