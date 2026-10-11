@@ -113,29 +113,31 @@ class LandmarkTracker:
 
         tracked[valid] = new_points[valid]
 
-        # Smooth the movement.
-        tracked = (
-            self.smoothing * old_points
-            + (1.0 - self.smoothing) * tracked
-        )
+        # Dynamic adaptive smoothing to eliminate jitter while avoiding lag during fast movement
+        dist = np.linalg.norm(tracked - old_points, axis=1, keepdims=True)
+        # For small dist (< 3px), high smoothing (0.75 old, 0.25 new)
+        # For larger dist (> 10px), lower smoothing (0.25 old, 0.75 new)
+        alpha = np.clip(0.75 - (dist / 15.0) * 0.50, 0.20, 0.80)
 
-        tracked[:, 0] = np.clip(
-            tracked[:, 0],
+        smoothed = alpha * old_points + (1.0 - alpha) * tracked
+
+        smoothed[:, 0] = np.clip(
+            smoothed[:, 0],
             0,
             width - 1
         )
 
-        tracked[:, 1] = np.clip(
-            tracked[:, 1],
+        smoothed[:, 1] = np.clip(
+            smoothed[:, 1],
             0,
             height - 1
         )
 
         self.previous_gray = gray
 
-        self.previous_landmarks = tracked.copy()
+        self.previous_landmarks = smoothed.copy()
 
-        return tracked
+        return smoothed
 
     def correct(self, landmarks):
 
@@ -147,20 +149,28 @@ class LandmarkTracker:
             dtype=np.float32
         )
 
+        if landmarks.shape != (68, 2) or not np.isfinite(landmarks).all():
+            return self.previous_landmarks
+
         if self.previous_landmarks is None:
 
             self.previous_landmarks = landmarks.copy()
 
             return landmarks
 
-        # Blend newly detected landmarks with
-        # the previous stable positions.
+        # Validate distance to prevent catastrophic jumps on false detections
+        dist = np.linalg.norm(landmarks - self.previous_landmarks, axis=1)
+        mean_dist = np.mean(dist)
+
+        # If detected landmarks jump by more than 80px average, reject as false detection
+        if mean_dist > 80.0:
+            return self.previous_landmarks
+
+        # Dynamic blend based on displacement
+        alpha = 0.60 if mean_dist < 15.0 else 0.30
         corrected = (
-            self.smoothing
-            * self.previous_landmarks
-            +
-            (1.0 - self.smoothing)
-            * landmarks
+            alpha * self.previous_landmarks
+            + (1.0 - alpha) * landmarks
         )
 
         self.previous_landmarks = corrected.copy()
