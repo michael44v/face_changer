@@ -1,366 +1,244 @@
-import numpy as np
-
 
 class ExpressionController:
+    def __init__(
+        self,
+        smoothing=0.35,
+        baseline_learning=0.015,
+        close_ratio=0.68,
+        reopen_ratio=0.82,
+        close_frames=2,
+        reopen_frames=2,
+        min_blink_frames=2,
+        max_blink_frames=20,
+    ):
+        self.smoothing = smoothing
+        self.baseline_learning = baseline_learning
 
-    def __init__(self):
+        self.close_ratio = close_ratio
+        self.reopen_ratio = reopen_ratio
 
-        # -----------------------------------------
-        # EAR baselines
-        # -----------------------------------------
+        self.close_frames = close_frames
+        self.reopen_frames = reopen_frames
+        self.min_blink_frames = min_blink_frames
+        self.max_blink_frames = max_blink_frames
+
+        self.left_smooth = None
+        self.right_smooth = None
 
         self.left_baseline = None
         self.right_baseline = None
 
-        # Slowly adapt to the user's natural eye shape
-        self.baseline_alpha = 0.01
-
-        # -----------------------------------------
-        # Smoothed EAR
-        # -----------------------------------------
-
-        self.left_ear_smooth = None
-        self.right_ear_smooth = None
-
-        self.ear_smoothing = 0.45
-
-        # -----------------------------------------
-        # Eye states
-        # -----------------------------------------
-
         self.left_closed = False
         self.right_closed = False
 
-        # Consecutive frame counters
-        self.left_close_frames = 0
-        self.right_close_frames = 0
+        self.left_close_count = 0
+        self.right_close_count = 0
 
-        self.left_open_frames = 0
-        self.right_open_frames = 0
+        self.left_open_count = 0
+        self.right_open_count = 0
 
-        # -----------------------------------------
-        # Thresholds
-        # -----------------------------------------
+        self.both_closed_frames = 0
+        self.blink_in_progress = False
 
-        # Relative to user's normal open eye.
-        self.close_ratio = 0.72
-        self.open_ratio = 0.82
+        self.blink_started = False
+        self.blink_detected = False
+        self.blink_count = 0
 
-        # Absolute safety threshold.
-        self.absolute_close_threshold = 0.24
+    @staticmethod
+    def _valid_ear(value):
+        return (
+            isinstance(value, (int, float))
+            and 0.0 < value < 1.0
+        )
 
-        # Require several frames before declaring
-        # an eye actually closed.
-        self.required_close_frames = 2
-        self.required_open_frames = 2
-
-        # -----------------------------------------
-        # Blink event
-        # -----------------------------------------
-
-        self.blink_active = False
-
-    # =================================================
-    # BASELINE
-    # =================================================
-
-    def _update_baseline(
-        self,
-        ear,
-        baseline
-    ):
-
-        if baseline is None:
-            return ear
-
-        # Do not allow a closing eye to drag
-        # the baseline downward.
-        if ear > baseline * 0.90:
-
-            baseline = (
-                (1.0 - self.baseline_alpha)
-                * baseline
-                +
-                self.baseline_alpha
-                * ear
-            )
-
-        return baseline
-
-    # =================================================
-    # SMOOTH EAR
-    # =================================================
-
-    def _smooth_ear(
-        self,
-        current,
-        previous
-    ):
-
+    def _smooth(self, previous, current):
         if previous is None:
             return current
 
         return (
-            self.ear_smoothing * previous
-            +
-            (1.0 - self.ear_smoothing) * current
+            self.smoothing * current
+            + (1.0 - self.smoothing) * previous
         )
 
-    # =================================================
-    # UPDATE
-    # =================================================
+    def _update_eye(
+        self,
+        ear,
+        smooth,
+        baseline,
+        closed,
+        close_count,
+        open_count,
+    ):
+        """
+        Update one eye using separate closing and reopening
+        thresholds to reduce rapid state switching.
+        """
+        smooth = self._smooth(smooth, ear)
+
+        if baseline is None:
+            baseline = smooth
+
+        ratio = smooth / max(baseline, 1e-6)
+
+        if not closed:
+            # Learn the normal open-eye EAR gradually.
+            # Do not learn a closed eye as the new baseline.
+            if ratio > self.reopen_ratio:
+                baseline = (
+                    (1.0 - self.baseline_learning) * baseline
+                    + self.baseline_learning * smooth
+                )
+
+            ratio = smooth / max(baseline, 1e-6)
+
+            if ratio < self.close_ratio:
+                close_count += 1
+            else:
+                close_count = 0
+
+            if close_count >= self.close_frames:
+                closed = True
+                close_count = 0
+                open_count = 0
+
+        else:
+            if ratio > self.reopen_ratio:
+                open_count += 1
+            else:
+                open_count = 0
+
+            if open_count >= self.reopen_frames:
+                closed = False
+                open_count = 0
+                close_count = 0
+
+        ratio = smooth / max(baseline, 1e-6)
+
+        return (
+            smooth,
+            baseline,
+            ratio,
+            closed,
+            close_count,
+            open_count,
+        )
 
     def update(self, eye_data):
+        # Events last for one update only.
+        self.blink_started = False
+        self.blink_detected = False
 
-        left_ear = float(
-            eye_data["left_ear"]
-        )
+        left_ear = float(eye_data["left_ear"])
+        right_ear = float(eye_data["right_ear"])
 
-        right_ear = float(
-            eye_data["right_ear"]
-        )
-
-        # -----------------------------------------
-        # Smooth EAR
-        # -----------------------------------------
-
-        self.left_ear_smooth = self._smooth_ear(
-            left_ear,
-            self.left_ear_smooth
-        )
-
-        self.right_ear_smooth = self._smooth_ear(
-            right_ear,
-            self.right_ear_smooth
-        )
-
-        left_ear = self.left_ear_smooth
-        right_ear = self.right_ear_smooth
-
-        # -----------------------------------------
-        # Update individual baselines
-        # -----------------------------------------
-
-        self.left_baseline = self._update_baseline(
-            left_ear,
-            self.left_baseline
-        )
-
-        self.right_baseline = self._update_baseline(
-            right_ear,
-            self.right_baseline
-        )
-
-        # -----------------------------------------
-        # Relative openness
-        # -----------------------------------------
-
-        left_ratio = (
-            left_ear
-            / max(self.left_baseline, 0.001)
-        )
-
-        right_ratio = (
-            right_ear
-            / max(self.right_baseline, 0.001)
-        )
-
-        # -----------------------------------------
-        # Closing conditions
-        #
-        # Use BOTH relative and absolute EAR.
-        # -----------------------------------------
-
-        left_is_closing = (
-            left_ratio < self.close_ratio
-            or
-            left_ear < self.absolute_close_threshold
-        )
-
-        right_is_closing = (
-            right_ratio < self.close_ratio
-            or
-            right_ear < self.absolute_close_threshold
-        )
-
-        # -----------------------------------------
-        # LEFT EYE
-        # -----------------------------------------
-
-        if left_is_closing:
-
-            self.left_close_frames += 1
-            self.left_open_frames = 0
-
-        else:
-
-            self.left_open_frames += 1
-            self.left_close_frames = 0
-
-        # -----------------------------------------
-        # RIGHT EYE
-        # -----------------------------------------
-
-        if right_is_closing:
-
-            self.right_close_frames += 1
-            self.right_open_frames = 0
-
-        else:
-
-            self.right_open_frames += 1
-            self.right_close_frames = 0
-
-        # -----------------------------------------
-        # Close left eye
-        # -----------------------------------------
-
-        if (
-            not self.left_closed
-            and
-            self.left_close_frames
-            >= self.required_close_frames
+        if not (
+            self._valid_ear(left_ear)
+            and self._valid_ear(right_ear)
         ):
-
-            self.left_closed = True
-
-        # -----------------------------------------
-        # Close right eye
-        # -----------------------------------------
-
-        if (
-            not self.right_closed
-            and
-            self.right_close_frames
-            >= self.required_close_frames
-        ):
-
-            self.right_closed = True
-
-        # -----------------------------------------
-        # Re-open left eye
-        # -----------------------------------------
-
-        left_has_recovered = (
-            left_ratio > self.open_ratio
-            and
-            left_ear > self.absolute_close_threshold
-        )
-
-        if (
-            self.left_closed
-            and
-            self.left_open_frames
-            >= self.required_open_frames
-            and
-            left_has_recovered
-        ):
-
-            self.left_closed = False
-
-        # -----------------------------------------
-        # Re-open right eye
-        # -----------------------------------------
-
-        right_has_recovered = (
-            right_ratio > self.open_ratio
-            and
-            right_ear > self.absolute_close_threshold
-        )
-
-        if (
-            self.right_closed
-            and
-            self.right_open_frames
-            >= self.required_open_frames
-            and
-            right_has_recovered
-        ):
-
-            self.right_closed = False
-
-        # -----------------------------------------
-        # Overall blink
-        # -----------------------------------------
-
-        blink_now = (
-            self.left_closed
-            or
-            self.right_closed
-        )
-
-        # Only true on transition:
-        #
-        # False -> True
-        #
-
-        blink_started = (
-            blink_now
-            and
-            not self.blink_active
-        )
-
-        self.blink_active = blink_now
-
-        # -----------------------------------------
-        # Normalized eye openness
-        # -----------------------------------------
-
-        left_open = np.clip(
-            left_ratio,
-            0.0,
-            1.0
-        )
-
-        right_open = np.clip(
-            right_ratio,
-            0.0,
-            1.0
-        )
-
-        # -----------------------------------------
-        # Return
-        # -----------------------------------------
-
-        return {
-
-            "left_open": float(
-                left_open
-            ),
-
-            "right_open": float(
-                right_open
-            ),
-
-            "left_ear_smooth": float(
-                self.left_ear_smooth
-            ),
-
-            "right_ear_smooth": float(
-                self.right_ear_smooth
-            ),
-
-            "left_closed": self.left_closed,
-
-            "right_closed": self.right_closed,
-
-            "blink": blink_now,
-
-            "blink_started": blink_started,
-
-            "left_baseline": float(
-                self.left_baseline
-            ),
-
-            "right_baseline": float(
-                self.right_baseline
-            ),
-
-            "left_ratio": float(
-                left_ratio
-            ),
-
-            "right_ratio": float(
-                right_ratio
+            return self._result(
+                left_ratio=0.0,
+                right_ratio=0.0,
             )
+
+        (
+            self.left_smooth,
+            self.left_baseline,
+            left_ratio,
+            self.left_closed,
+            self.left_close_count,
+            self.left_open_count,
+        ) = self._update_eye(
+            left_ear,
+            self.left_smooth,
+            self.left_baseline,
+            self.left_closed,
+            self.left_close_count,
+            self.left_open_count,
+        )
+
+        (
+            self.right_smooth,
+            self.right_baseline,
+            right_ratio,
+            self.right_closed,
+            self.right_close_count,
+            self.right_open_count,
+        ) = self._update_eye(
+            right_ear,
+            self.right_smooth,
+            self.right_baseline,
+            self.right_closed,
+            self.right_close_count,
+            self.right_open_count,
+        )
+
+        both_closed = (
+            self.left_closed and self.right_closed
+        )
+
+        both_open = (
+            not self.left_closed and not self.right_closed
+        )
+
+        if both_closed:
+            self.both_closed_frames += 1
+
+            if not self.blink_in_progress:
+                self.blink_in_progress = True
+                self.blink_started = True
+
+        elif both_open:
+            if self.blink_in_progress:
+                duration = self.both_closed_frames
+
+                if (
+                    self.min_blink_frames
+                    <= duration
+                    <= self.max_blink_frames
+                ):
+                    self.blink_detected = True
+                    self.blink_count += 1
+
+                self.blink_in_progress = False
+
+            self.both_closed_frames = 0
+
+        else:
+            # A prolonged asymmetric closure should not remain
+            # classified as a normal blink.
+            if (
+                self.blink_in_progress
+                and self.both_closed_frames
+                > self.max_blink_frames
+            ):
+                self.blink_in_progress = False
+                self.both_closed_frames = 0
+
+        return self._result(left_ratio, right_ratio)
+
+    def _result(self, left_ratio=0.0, right_ratio=0.0):
+        return {
+            "left_ear_smooth": (
+                self.left_smooth
+                if self.left_smooth is not None else 0.0
+            ),
+            "right_ear_smooth": (
+                self.right_smooth
+                if self.right_smooth is not None else 0.0
+            ),
+            "left_baseline": (
+                self.left_baseline
+                if self.left_baseline is not None else 0.0
+            ),
+            "right_baseline": (
+                self.right_baseline
+                if self.right_baseline is not None else 0.0
+            ),
+            "left_ratio": left_ratio,
+            "right_ratio": right_ratio,
+            "left_closed": self.left_closed,
+            "right_closed": self.right_closed,
+            "blink_started": self.blink_started,
+            "blink_detected": self.blink_detected,
+            "blink_count": self.blink_count,
         }

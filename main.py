@@ -201,7 +201,9 @@ while True:
             f"STATE "
             f"L:{expression['left_closed']} "
             f"R:{expression['right_closed']} | "
-            f"BLINK:{expression['blink_started']}"
+            f"START:{expression['blink_started']} "
+            f"BLINK:{expression['blink_detected']} "
+            f"COUNT:{expression['blink_count']}"
         )
 
 
@@ -228,29 +230,92 @@ while True:
         )
 
 
+        
         # ------------------------------------------
-        # Debug eye landmarks
+        # Blink and landmark diagnostics
         # ------------------------------------------
 
-        for i in range(36, 48):
+        debug_frame = transformed.copy()
 
-            x, y = landmarks[i].astype(
-                int
+        # Draw the two eye contours.
+        eye_contours = [
+            list(range(36, 42)),
+            list(range(42, 48)),
+        ]
+
+        for contour in eye_contours:
+            points = landmarks[contour].astype(
+                "int32"
+            ).reshape((-1, 1, 2))
+
+            cv2.polylines(
+                debug_frame,
+                [points],
+                True,
+                (0, 255, 0),
+                2,
             )
+
+        # Draw individual landmarks.
+        for i in range(36, 48):
+            x, y = landmarks[i].astype(int)
 
             cv2.circle(
-                transformed,
+                debug_frame,
                 (x, y),
-                2,
-                (0, 255, 0),
-                -1
+                3,
+                (0, 0, 255),
+                -1,
             )
 
+        # Show raw and smoothed measurements.
+        diagnostic_lines = [
+            (
+                f"EAR L:{eye_data['left_ear']:.3f} "
+                f"R:{eye_data['right_ear']:.3f}"
+            ),
+            (
+                f"RATIO L:{expression['left_ratio']:.2f} "
+                f"R:{expression['right_ratio']:.2f}"
+            ),
+            (
+                f"CLOSED L:{expression['left_closed']} "
+                f"R:{expression['right_closed']}"
+            ),
+            (
+                f"BLINKS: {expression['blink_count']}"
+            ),
+        ]
+
+        for index, line in enumerate(diagnostic_lines):
+            cv2.putText(
+                debug_frame,
+                line,
+                (10, 30 + index * 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        if expression["blink_detected"]:
+            cv2.putText(
+                debug_frame,
+                "BLINK CONFIRMED!",
+                (10, 155),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
 
         cv2.imshow(
             "Face Transformer",
-            transformed
+            debug_frame
         )
+
 
 
     else:
